@@ -1,0 +1,5 @@
+<resources>
+    <string name="notification_channel_name">PolyStats Live Markets</string>
+    <string name="notification_content_title">PolyStats</string>
+    <string name="notification_content_text">Monitoring relevant Polymarket markets</string>
+</resources>
