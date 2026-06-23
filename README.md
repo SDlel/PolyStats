@@ -47,17 +47,8 @@ Key packages:
 - `services/`: foreground monitor, boot receiver, notification builder
 - `ui/`: Compose app shell and market surfaces
 
-## Build
-
-```powershell
-.\gradlew.bat assembleDebug
-```
-
-The debug APK is produced at:
-
-```text
-app/build/outputs/apk/debug/app-debug.apk
-```
+## Releases
+Find the latest app apk in the releases page!
 
 ## Notes
 
