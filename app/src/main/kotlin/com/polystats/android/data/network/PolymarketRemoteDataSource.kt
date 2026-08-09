@@ -7,9 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -27,21 +26,18 @@ interface MarketDataSource {
 @Singleton
 class PolymarketRemoteDataSource @Inject constructor() : MarketDataSource {
 
-    private val concurrencyMutex = Mutex()
-    private var activeRequests = 0
-
     override suspend fun fetchMarkets(): List<Market> = withContext(Dispatchers.IO) {
-        runCatching {
-            val urls = discoveryUrls()
-            val results = mutableListOf<List<Market>>()
-            for (batch in urls.chunked(MAX_CONCURRENT_REQUESTS)) {
-                val batchResults = coroutineScope {
-                    batch.map { url ->
-                        async {
-                            acquireSlot()
-                            try {
+        val result = withTimeoutOrNull(FETCH_TIMEOUT_MS) {
+            runCatching {
+                val urls = discoveryUrls()
+                val batches = urls.chunked(MAX_CONCURRENT)
+                val collected = mutableListOf<List<Market>>()
+                for (batch in batches) {
+                    val batchResults = coroutineScope {
+                        batch.map { url ->
+                            async {
                                 runCatching {
-                                    val body = get(url)
+                                    val body = httpGet(url)
                                     if (url.contains("/events")) {
                                         parseEvents(JSONArray(body))
                                     } else {
@@ -51,42 +47,33 @@ class PolymarketRemoteDataSource @Inject constructor() : MarketDataSource {
                                     Log.w("PolyStatsRemote", "Lane failed: $url", it)
                                     emptyList()
                                 }
-                            } finally {
-                                releaseSlot()
                             }
-                        }
-                    }.awaitAll()
+                        }.awaitAll()
+                    }
+                    collected.addAll(batchResults)
+                    val soFar = collected.flatten().distinctBy { it.id }
+                    if (soFar.size >= TARGET_MARKETS) break
                 }
-                results.addAll(batchResults)
-            }
-            results.flatten()
-                .distinctBy { it.id }
-                .filter { it.status == "Open" && it.acceptingOrders }
-                .ifEmpty { SampleMarkets.all }
-        }.onFailure {
-            Log.w("PolyStatsRemote", "Using fallback markets after Polymarket fetch failure", it)
-        }.getOrElse { SampleMarkets.all }
-    }
-
-    private suspend fun acquireSlot() {
-        concurrencyMutex.withLock {
-            activeRequests++
+                soFarMarkets(collected)
+            }.getOrNull()
         }
+        result ?: SampleMarkets.all
     }
 
-    private suspend fun releaseSlot() {
-        concurrencyMutex.withLock {
-            activeRequests--
-        }
-    }
+    private fun soFarMarkets(collected: MutableList<List<Market>>): List<Market> = collected
+        .flatten()
+        .distinctBy { it.id }
+        .filter { it.status == "Open" && it.acceptingOrders }
+        .ifEmpty { SampleMarkets.all }
 
-    private fun get(url: String): String {
+    private fun httpGet(url: String): String {
         val connection = (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = CONNECTION_TIMEOUT_MS
+            connectTimeout = CONNECT_TIMEOUT_MS
             readTimeout = READ_TIMEOUT_MS
             requestMethod = "GET"
             setRequestProperty("Accept", "application/json")
             setRequestProperty("User-Agent", "PolyStats Android")
+            instanceFollowRedirects = true
         }
         return try {
             if (connection.responseCode !in 200..299) error("HTTP ${connection.responseCode}")
@@ -99,16 +86,13 @@ class PolymarketRemoteDataSource @Inject constructor() : MarketDataSource {
     private fun discoveryUrls(): List<String> {
         val orders = listOf("volume24hr", "volume", "liquidity")
         val eventPages = orders.flatMap { order ->
-            (0..2).map { page ->
+            (0..1).map { page ->
                 val offset = page * PAGE_SIZE
                 "https://gamma-api.polymarket.com/events?active=true&closed=false&limit=$PAGE_SIZE&offset=$offset&order=$order&ascending=false"
             }
         }
-        val marketPages = orders.flatMap { order ->
-            (0..1).map { page ->
-                val offset = page * PAGE_SIZE
-                "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=$PAGE_SIZE&offset=$offset&order=$order&ascending=false"
-            }
+        val marketPages = orders.map { order ->
+            "https://gamma-api.polymarket.com/markets?active=true&closed=false&limit=$PAGE_SIZE&order=$order&ascending=false"
         }
         return eventPages + marketPages
     }
@@ -243,10 +227,10 @@ class PolymarketRemoteDataSource @Inject constructor() : MarketDataSource {
 
     private fun JSONObject.optDoubleFlexible(name: String, fallback: Double = 0.0): Double {
         val raw = opt(name) ?: return fallback
-        return when (raw) {
-            is Number -> raw.toDouble()
-            is String -> raw.toDoubleOrNull() ?: fallback
-            else -> fallback
+        when (raw) {
+            is Number -> return raw.toDouble()
+            is String -> return raw.toDoubleOrNull() ?: fallback
+            else -> return fallback
         }
     }
 
@@ -287,9 +271,11 @@ class PolymarketRemoteDataSource @Inject constructor() : MarketDataSource {
 
     private companion object {
         const val PAGE_SIZE = 75
-        const val MAX_CONCURRENT_REQUESTS = 4
-        const val CONNECTION_TIMEOUT_MS = 8_000
-        const val READ_TIMEOUT_MS = 8_000
+        const val MAX_CONCURRENT = 3
+        const val CONNECT_TIMEOUT_MS = 5_000
+        const val READ_TIMEOUT_MS = 5_000
+        const val FETCH_TIMEOUT_MS = 15_000L
+        const val TARGET_MARKETS = 150
     }
 }
 

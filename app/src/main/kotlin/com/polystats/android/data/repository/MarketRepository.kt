@@ -1,6 +1,7 @@
 package com.polystats.android.data.repository
 
 import com.polystats.android.data.network.MarketDataSource
+import com.polystats.android.data.network.SampleMarkets
 import com.polystats.android.data.preferences.PreferencesStore
 import com.polystats.android.domain.Market
 import com.polystats.android.domain.MarketCategory
@@ -46,14 +47,13 @@ class MarketRepository @Inject constructor(
 ) {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private val ranker = MarketRanker()
-    private val markets = MutableStateFlow<List<Market>>(emptyList())
+    private val markets = MutableStateFlow<List<Market>>(SampleMarkets.all)
     private val query = MutableStateFlow("")
     private val loading = MutableStateFlow(true)
     private val lastUpdatedAt = MutableStateFlow(0L)
     private val error = MutableStateFlow<String?>(null)
 
     private val refreshMutex = Mutex()
-    private var isInitialized = false
     private var consecutiveQuietCycles = 0
 
     val uiState: StateFlow<MarketUiState>
@@ -104,35 +104,27 @@ class MarketRepository @Inject constructor(
                 )
             }.collect { mutableUiState.value = it }
         }
+        refresh()
     }
 
     fun refresh() {
-        if (!isInitialized) {
-            isInitialized = true
-            scope.launch {
-                loading.value = true
-                performFetch()
-                loading.value = false
-            }
-            return
-        }
         scope.launch {
             refreshMutex.withLock {
                 loading.value = true
-                performFetch()
+                runCatching { dataSource.fetchMarkets() }
+                    .onSuccess {
+                        markets.value = it
+                        lastUpdatedAt.value = System.currentTimeMillis()
+                        error.value = null
+                    }
+                    .onFailure {
+                        if (markets.value.isEmpty() || markets.value == SampleMarkets.all) {
+                            markets.value = SampleMarkets.all
+                        }
+                        error.value = it.message ?: "Unable to refresh markets"
+                    }
                 loading.value = false
             }
-        }
-    }
-
-    private suspend fun performFetch() {
-        val result = runCatching { dataSource.fetchMarkets() }
-        result.onSuccess {
-            markets.value = it
-            lastUpdatedAt.value = System.currentTimeMillis()
-            error.value = null
-        }.onFailure {
-            error.value = it.message ?: "Unable to refresh markets"
         }
     }
 
@@ -146,12 +138,17 @@ class MarketRepository @Inject constructor(
                     ACTIVE_REFRESH_MS
                 } else {
                     consecutiveQuietCycles++
-                    val backoffMultiplier = min(consecutiveQuietCycles, MAX_BACKOFF_MULTIPLIER)
-                    QUIET_REFRESH_MS * backoffMultiplier
+                    val multiplier = min(consecutiveQuietCycles, MAX_BACKOFF)
+                    QUIET_REFRESH_MS * multiplier
                 }
                 delay(delayMs)
                 refreshMutex.withLock {
-                    performFetch()
+                    runCatching { dataSource.fetchMarkets() }
+                        .onSuccess {
+                            markets.value = it
+                            lastUpdatedAt.value = System.currentTimeMillis()
+                            error.value = null
+                        }
                 }
             }
         }
@@ -175,6 +172,6 @@ class MarketRepository @Inject constructor(
     private companion object {
         const val ACTIVE_REFRESH_MS = 90_000L
         const val QUIET_REFRESH_MS = 3 * 60_000L
-        const val MAX_BACKOFF_MULTIPLIER = 5
+        const val MAX_BACKOFF = 5
     }
 }
