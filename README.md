@@ -1,6 +1,6 @@
 # PolyStats
 
-Real-Time Polymarket Intelligence for Android
+Real-Time Polymarket Intelligence for Android.
 
 PolyStats turns the original prototype into a premium market-monitoring app focused on fast Polymarket discovery, personalized ranking, and Samsung Now Bar-ready live market updates.
 
