@@ -53,24 +53,3 @@ Find the latest app apk in the releases page!
 ## Notes
 
 This rebuild intentionally removes the old network-speed meter behavior, overlay windows, and quick setting tiles. To match the working NowbarMeter bypass, the installed Android package id is intentionally `com.kakao.taxi`.
-AAAAAAAAAAAAA
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
-A
